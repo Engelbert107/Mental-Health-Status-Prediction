@@ -1,3 +1,4 @@
+*.DS_Store/
 ml_helper/__pycache__/
 notebook/logs/
 models/*.bin
