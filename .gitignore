@@ -1,0 +1,8 @@
+ml_helper/__pycache__/
+notebook/logs/
+models/*.bin
+models/*.keras
+models/*.pkl
+
+
+
