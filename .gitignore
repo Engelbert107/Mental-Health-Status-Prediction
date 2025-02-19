@@ -4,7 +4,7 @@ notebook/logs/
 notebook/.DS_Store
 models/*.bin
 models/*.keras
-models/*.pkl
+models/word2vec_reduced.pkl
 
 
 
