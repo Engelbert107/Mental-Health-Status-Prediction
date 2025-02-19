@@ -1,58 +1,108 @@
+import os
 import re
 import emoji
+import string
 import pickle
+import gensim
+import inflect
 import numpy as np
+import unicodedata
+import contractions
+from bs4 import BeautifulSoup
+from textblob import TextBlob
 from nltk.corpus import stopwords
 from nltk.stem import PorterStemmer
 from nltk.tokenize import word_tokenize
+from sklearn.decomposition import TruncatedSVD
+from tensorflow.keras.preprocessing.text import Tokenizer # type: ignore
 from sklearn.model_selection import StratifiedShuffleSplit
+from tensorflow.keras.preprocessing.sequence import pad_sequences # type: ignore
 
 
+import nltk
+nltk.download('punkt')
+nltk.download('stopwords')
 
-def find_and_replace_chat_words(text, chat_words):
-    """Replaces chat words in the given text with their full meanings."""
-    text = str(text)  # Ensure input is string
-    words = text.split()  # Split text into words
-    
-    # Replace words with dictionary values (case insensitive lookup)
-    words = [chat_words.get(word.upper(), word) for word in words]
-    
-    return ' '.join(words)
 
+# Precompile regex patterns for efficiency
+URL_PATTERN = re.compile(r'http\S+|www\S+|https\S+')
+EXTRA_SPACES_PATTERN = re.compile(r'\s+')
+CHAT_WORDS_PATTERN = re.compile(r'\b\w+\b')
+
+# Initialize objects once
+INFLECT_ENGINE = inflect.engine()
+STEMMER = PorterStemmer()
+STOP_WORDS = frozenset(stopwords.words('english'))  # Faster lookup
+
+def denoise_text(text):
+    """Remove HTML tags and fix contractions."""
+    soup = BeautifulSoup(text, "html.parser")
+    text = soup.get_text()
+    return text  # Removed contractions for speed
+
+def remove_non_ascii(words):
+    """Remove non-ASCII characters using list comprehension."""
+    return [unicodedata.normalize('NFKD', word).encode('ascii', 'ignore').decode('utf-8', 'ignore') for word in words]
+
+def to_lowercase(words):
+    """Convert words to lowercase using list comprehension."""
+    return [word.lower() for word in words]
+
+def remove_punctuation(words):
+    """Remove punctuation using `str.translate()` (Faster than list comprehensions)."""
+    translator = str.maketrans('', '', string.punctuation)
+    return [word.translate(translator) for word in words]
+
+def remove_extra_spaces(text):
+    """Remove extra whitespaces using precompiled regex."""
+    return EXTRA_SPACES_PATTERN.sub(' ', text).strip()
+
+def replace_numbers(words):
+    """Replace digits with words using Inflect (Vectorized Processing)."""
+    return [INFLECT_ENGINE.number_to_words(word) if word.isdigit() else word for word in words]
 
 def replace_emojis(text):
-    """Replaces emojis with descriptive text."""
-    return emoji.demojize(text).replace(":", " ").replace("_", " ")
+    """Convert emojis to text efficiently."""
+    return emoji.demojize(text, delimiters=(" ", " ")).replace("_", " ")
 
+def find_and_replace_chat_words(text, chat_words):
+    """Replace chat words using regex and dictionary lookup."""
+    def replace_match(match):
+        word = match.group(0).lower()
+        return chat_words.get(word, match.group(0))  # Preserve original if not found
+    return CHAT_WORDS_PATTERN.sub(replace_match, text)
 
-def preprocess_text(text):
-    """Preprocesses text by cleaning, normalizing, and tokenizing."""
-    if not isinstance(text, str):  # Handle NaN or non-string values
+def remove_stopwords(words):
+    """Remove stopwords using frozenset for fast lookup."""
+    return [word for word in words if word not in STOP_WORDS]
+
+def stem_words(words):
+    """Apply stemming using list comprehension."""
+    return [STEMMER.stem(word) for word in words]
+
+def preprocess_text(text, chat_words={}):
+    """Preprocess text with optimized pipeline."""
+    if not isinstance(text, str):
         return ""
-    
-    text = replace_emojis(text)  # Convert emojis to words
-    
-    # Remove URLs
-    text = re.sub(r'http\S+|www\S+|https\S+', '', text)
-    
-    # Remove special characters and punctuation (keep only alphanumeric characters and spaces)
-    text = re.sub(r'[^a-zA-Z\s]', '', text)  # Keep only letters and spaces
-    
-    # Remove extra whitespaces
-    text = re.sub(r'\s+', ' ', text).strip()
-    
-    # Convert to lowercase for NLP processing
-    text = text.lower()
 
-    # Tokenization
-    tokens = word_tokenize(text)
+    # 1. Denoising
+    text = denoise_text(text)
+    text = replace_emojis(text)
+    text = remove_extra_spaces(text)
+    text = find_and_replace_chat_words(text, chat_words)
 
-    # Remove stop words and apply stemming
-    stemmer = PorterStemmer()
-    stop_words = set(stopwords.words('english'))
-    cleaned_tokens = [stemmer.stem(token) for token in tokens if token not in stop_words]
+    # 2. Tokenization
+    words = word_tokenize(text)
 
-    return ' '.join(cleaned_tokens)
+    # 3. Processing pipeline
+    words = to_lowercase(words)
+    words = remove_non_ascii(words)
+    words = remove_punctuation(words)
+    words = replace_numbers(words)
+    words = remove_stopwords(words)
+    words = stem_words(words)
+
+    return ' '.join(words)
 
 
 
@@ -93,7 +143,6 @@ def stratified_train_val_test_split(df, text_column, label_column,
 
 
 
-
 def save_pickle(obj, path):
     """Save an object using pickle."""
     with open(path, "wb") as f:
@@ -128,6 +177,58 @@ def save_npz_file(filepath, **kwargs):
 def load_npz_file(filepath):
     """Load a .npz file and return as a dictionary."""
     return np.load(filepath, allow_pickle=True)
+
+
+
+def process_data_for_model_input(word2vec_path, X_train, X_val, X_test,
+                                 MAX_NUM_WORDS=75000, EMBEDDING_DIM=50, MAX_SEQUENCE_LENGTH=100):
+    # Load Word2Vec Model and Compute Reduced Embeddings
+    print("Computing Word2Vec embeddings...")
+    word2vec_model = gensim.models.KeyedVectors.load_word2vec_format(word2vec_path, binary=True)
+    svd = TruncatedSVD(n_components=EMBEDDING_DIM)
+    reduced_embeddings = svd.fit_transform(word2vec_model.vectors)
+    word2vec_reduced = {word: reduced_embeddings[i] for i, word in enumerate(word2vec_model.index_to_key)}
+    save_pickle(word2vec_reduced, "../models/word2vec_reduced.pkl")
+    print("Word2Vec embeddings saved!")
+    
+    # Compute Tokenizer
+    print("Computing tokenizer...")
+    full_texts = list(X_train) + list(X_val) + list(X_test)
+    tokenizer = Tokenizer(num_words=MAX_NUM_WORDS, oov_token="<OOV>")
+    tokenizer.fit_on_texts(full_texts)
+    save_pickle(tokenizer, "../models/tokenizer.pkl")
+    print("Tokenizer saved!")
+    
+    # Compute Embedding Matrix
+    print("Computing embedding matrix...")
+    input_size = len(tokenizer.word_index) + 1
+    embedding_matrix = np.zeros((input_size, EMBEDDING_DIM))
+
+    oov_index = tokenizer.word_index.get("<OOV>", None)
+    if oov_index:
+        # Assign a random vector to the OOV token
+        embedding_matrix[oov_index] = np.random.uniform(-0.25, 0.25, EMBEDDING_DIM)
+
+    for word, i in tokenizer.word_index.items():
+        if word in word2vec_reduced:
+            embedding_matrix[i] = word2vec_reduced[word]
+        
+    # Compute Padded Sequences
+    print("Computing padded sequences...")
+    X_train_sequences = tokenizer.texts_to_sequences(X_train)
+    X_val_sequences = tokenizer.texts_to_sequences(X_val)
+    X_test_sequences = tokenizer.texts_to_sequences(X_test)
+
+    X_train_padded = pad_sequences(X_train_sequences, padding="post", maxlen=MAX_SEQUENCE_LENGTH)
+    X_val_padded = pad_sequences(X_val_sequences, padding="post", maxlen=MAX_SEQUENCE_LENGTH)
+    X_test_padded = pad_sequences(X_test_sequences, padding="post", maxlen=MAX_SEQUENCE_LENGTH)
+    
+    print("\nTokenizer vocab size:", input_size)  # Check new vocab size
+
+    print("\nData processing complete.")
+    return X_train_padded, X_val_padded, X_test_padded, tokenizer, embedding_matrix
+
+
 
 
 
