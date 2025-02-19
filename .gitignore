@@ -5,6 +5,7 @@ notebook/.DS_Store
 models/*.bin
 models/*.keras
 models/word2vec_reduced.pkl
+models/tokenizer.pkl
 
 
 
