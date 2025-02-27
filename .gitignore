@@ -6,6 +6,7 @@ models/*.bin
 models/*.keras
 models/word2vec_reduced.pkl
 models/tokenizer.pkl
+models/tdidf_vectorizer.pkl
 
 
 
