@@ -1,4 +1,3 @@
-import os
 import re
 import emoji
 import string
@@ -7,9 +6,8 @@ import gensim
 import inflect
 import numpy as np
 import unicodedata
-import contractions
+# import contractions
 from bs4 import BeautifulSoup
-from textblob import TextBlob
 from nltk.corpus import stopwords
 from nltk.stem import PorterStemmer
 from nltk.tokenize import word_tokenize
